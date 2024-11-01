@@ -1,0 +1,5 @@
+En esta carpeta van a poder ver el codigo que utilizamos para el proyecto. Para verificar su funcionamiento, recomendamos utilizar el programa Arduino IDE. Ademas las librerias usadas son:
+1. SPI (Para comunicación SPI, que permite la comunicación con el módulo RFID)
+2. MFRC522 (para el módulo RFID-RC522)
+3. LiquidCrystal (Para controlar la pantalla LCD)
+4. Servo (Para el servomotor)
