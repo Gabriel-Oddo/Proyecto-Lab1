@@ -1,112 +1,170 @@
-#include <SPI.h>
-#include <MFRC522.h>
 #include <LiquidCrystal.h>
-#include <Servo.h>
+#include <SPI.h>            // Librería para comunicación SPI
+#include <MFRC522.h>        // Librería para el módulo RFID
+#include <Keypad.h>         // Librería para el teclado matricial
 
+// Pines para la pantalla LCD en pines analógicos
+LiquidCrystal lcd(A5, A4, A3, A2, A1, A0);  // RS = A5, E = A4, D4 = A3, D5 = A2, D6 = A1, D7 = A0
 
+// Pines y objeto para el lector RFID
+#define SS_PIN 10           // Pin SDA del RFID
+#define RST_PIN 9           // Pin RST del RFID
+MFRC522 rfid(SS_PIN, RST_PIN);  // Objeto RFID
 
-#define SS_PIN 10
-#define RST_PIN 9
-MFRC522 mfrc522(SS_PIN, RST_PIN);
+// Configuración del teclado matricial (4x4)
+const byte FILAS = 4;  // 4 filas
+const byte COLUMNAS = 4;  // 4 columnas
 
+// Configuración del teclado sin las teclas A, B, C, D
+char teclas[FILAS][COLUMNAS] = {
+  {'1','2','3','*'},  // Primera fila con números y '*'
+  {'4','5','6','0'},  // Segunda fila con números
+  {'7','8','9','#'},  // Tercera fila con números y '#'
+  {'*','0','#',' '}   // Cuarta fila, ' ' se usa para ignorar la tecla D
+};
 
+byte pinFila[FILAS] = {3, 4, 5, 6};  // Pines de las filas del teclado
+byte pinColumna[COLUMNAS] = {2, 7, 8, 1};  // Pines de las columnas del teclado (columna 2 en pin 7, columna 3 en pin 8)
 
-LiquidCrystal lcd(A5, A4, A3, A2, A1, A0);
-Servo servo;
-const int pinServo = 4;
-const int piezoPin = 11;
+Keypad teclado = Keypad(makeKeymap(teclas), pinFila, pinColumna, FILAS, COLUMNAS);
 
+// Definir UID válido para activar la tarjeta correcta
+byte uidValida[4] = {0x14, 0x8A, 0x32, 0x2B};  // UID de la tarjeta válida
+int secuenciaCorrecta[] = {8, 8, 2, 8};  // Secuencia correcta de la clave
 
+int secuenciaIngresada[4];  // Para almacenar los 4 dígitos ingresados
+int indiceSecuencia = 0;    // Para llevar el control de la secuencia de dígitos ingresados
 
-bool tarjetaCorrecta = false;
-bool tarjetaIncorrecta = false;
-
-
+unsigned long tiempoCambio;
+const unsigned long intervalo = 3000; // Intervalo de 3 segundos
 
 void setup() {
-  Serial.begin(9600);
-  SPI.begin();
-  mfrc522.PCD_Init();
-  Serial.println("Aproxime el llavero RFID al lector.");
-
-
-
-  lcd.begin(16, 2);
-  lcd.clear();
+  Serial.begin(9600); // Inicializa la comunicación serial para mostrar el UID
+  lcd.begin(16, 2);         // Inicializa la pantalla LCD de 16x2
+  lcd.clear();              // Limpia la pantalla
   lcd.setCursor(0, 0);
-  lcd.print("Inserte su clave");
+  lcd.print("Ingrese clave");
 
-
-
-  servo.attach(pinServo);
-  servo.write(0);
-  pinMode(piezoPin, OUTPUT);
+  // Inicialización del lector RFID
+  SPI.begin();
+  rfid.PCD_Init();
 }
 
-
-
 void loop() {
-  if (!mfrc522.PICC_IsNewCardPresent())
-    return;
+  leerTarjeta(); // Llama a la función para leer la tarjeta
+  char tecla = teclado.getKey();  // Obtiene la tecla presionada
 
+  // Verifica si se ha presionado una tecla del teclado
+  if (tecla) {
+    if (tecla >= '0' && tecla <= '9') {
+      int digito = tecla - '0';  // Convierte el carácter en número entero
+      secuenciaIngresada[indiceSecuencia] = digito;  // Guarda el dígito ingresado
+      indiceSecuencia++;  // Avanza en la secuencia
 
+      // Muestra los dígitos ingresados en la pantalla LCD
+      lcd.clear();  // Limpiar la pantalla para actualizarla
+      lcd.setCursor(0, 0);  // Posiciona el cursor en la fila 0, columna 0
 
-  if (!mfrc522.PICC_ReadCardSerial())
-    return;
+      for (int i = 0; i < indiceSecuencia; i++) {
+        lcd.print(secuenciaIngresada[i]);  // Muestra cada dígito en la pantalla
+      }
 
+      // Si se ingresaron 4 dígitos y se presiona la tecla '*'
+      if (indiceSecuencia == 4) {
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("Presione *");
+      }
+    }
 
+    // Si se presiona la tecla '*' después de ingresar los 4 dígitos
+    if (tecla == '*') {
+      // Verifica si la secuencia ingresada es correcta
+      bool esCorrecta = true;
+      for (int i = 0; i < 4; i++) {
+        if (secuenciaIngresada[i] != secuenciaCorrecta[i]) {
+          esCorrecta = false;
+          break;
+        }
+      }
 
-  String uid = "";
-  for (byte i = 0; i < mfrc522.uid.size; i++) {
-    uid += String(mfrc522.uid.uidByte[i], HEX);
+      if (esCorrecta) {
+        mostrarBienvenido(); // Función para mostrar "Bienvenido"
+      } else {
+        mostrarError(); // Función para mostrar "Error"
+      }
+
+      // Resetea la secuencia ingresada para que empiece de nuevo
+      indiceSecuencia = 0;
+      // Limpiar la secuencia de dígitos para el próximo intento
+      for (int i = 0; i < 4; i++) {
+        secuenciaIngresada[i] = 0;
+      }
+    }
   }
+}
 
+void mostrarBienvenido() {
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Bienvenido");
 
+  // Espera 3 segundos para volver a la pantalla de inicio
+  delay(3000);
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Ingrese clave");
 
-  if (uid == "") {
-    tarjetaCorrecta = true;
+  // Resetea la secuencia de la clave
+  secuenciaIngresada[0] = secuenciaIngresada[1] = secuenciaIngresada[2] = secuenciaIngresada[3] = 0;
+  indiceSecuencia = 0;
+}
+
+void mostrarError() {
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Clave incorrecta");
+
+  // Espera 3 segundos para volver a la pantalla de inicio
+  delay(3000);
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Ingrese clave");
+
+  // Resetea la secuencia de la clave
+  secuenciaIngresada[0] = secuenciaIngresada[1] = secuenciaIngresada[2] = secuenciaIngresada[3] = 0;
+  indiceSecuencia = 0;
+}
+
+// Función para leer la tarjeta RFID
+void leerTarjeta() {
+  if (!rfid.PICC_IsNewCardPresent()) return; // Verifica si hay una nueva tarjeta
+  if (!rfid.PICC_ReadCardSerial()) return;   // Lee el UID de la tarjeta
+  
+  // Muestra el UID de la tarjeta en la terminal serial
+  Serial.print("UID de la tarjeta: ");
+  for (byte i = 0; i < rfid.uid.size; i++) {
+    Serial.print(rfid.uid.uidByte[i], HEX);  // Imprime el UID en formato hexadecimal
+    Serial.print(" ");
+  }
+  Serial.println(); // Salto de línea después del UID
+
+  // Verifica si el UID leído de la tarjeta es válido
+  if (TarjetaValida()) {
+    mostrarBienvenido(); // Si es válido, muestra "Bienvenido"
   } else {
-    tarjetaIncorrecta = true;
+    mostrarError(); // Si no es válido, muestra "Error"
   }
+}
 
-
-
-  mfrc522.PICC_HaltA();
-
-
-
-  if (tarjetaIncorrecta) {
-    tone(piezoPin, 1000, 500);
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("Usuario no");
-    lcd.setCursor(0, 1);
-    lcd.print("encontrado");
-    delay(3000);
-
-
-
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("Inserte su clave");
-    tarjetaIncorrecta = false;
-  } else if (tarjetaCorrecta) {
-    tone(piezoPin, 2000, 500);
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("Bienvenido");
-
-
-
-    servo.write(90);
-    delay(3000);
-
-
-
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("Inserte su clave");
-    servo.write(0);
-    tarjetaCorrecta = false;
+// Verifica si el UID leído de la tarjeta es válido
+bool TarjetaValida() {
+  bool tarjetaValida = true;
+  for (byte i = 0; i < 4; i++) {
+    if (rfid.uid.uidByte[i] != uidValida[i]) {
+      tarjetaValida = false;
+      break;
+    }
   }
+  return tarjetaValida;
 }
