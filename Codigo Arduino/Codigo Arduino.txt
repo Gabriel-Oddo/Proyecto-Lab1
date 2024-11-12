@@ -28,7 +28,12 @@ byte pinColumna[COLUMNAS] = {2, 7, 8, 1};  // Pines de las columnas del teclado 
 
 Keypad teclado = Keypad(makeKeymap(teclas), pinFila, pinColumna, FILAS, COLUMNAS);
 
-// Definir UID válido para activar la tarjeta correcta
+// Array para almacenar UIDs permitidos
+#define MAX_UIDS 10
+byte uidsPermitidos[MAX_UIDS][4];
+int numUIDs = 1;  // Número de UIDs permitidos
+
+// UID inicial
 byte uidValida[4] = {0x14, 0x8A, 0x32, 0x2B};  // UID de la tarjeta válida
 int secuenciaCorrecta[] = {8, 8, 2, 8};  // Secuencia correcta de la clave
 
@@ -48,6 +53,11 @@ void setup() {
   // Inicialización del lector RFID
   SPI.begin();
   rfid.PCD_Init();
+
+  // Agrega el primer UID permitido
+  for (int i = 0; i < 4; i++) {
+    uidsPermitidos[0][i] = uidValida[i];
+  }
 }
 
 void loop() {
@@ -56,7 +66,13 @@ void loop() {
 
   // Verifica si se ha presionado una tecla del teclado
   if (tecla) {
-    if (tecla >= '0' && tecla <= '9') {
+    Serial.print("Tecla presionada: ");
+    Serial.println(tecla);  // Muestra la tecla presionada en el monitor serial
+
+    if (tecla == '#') {
+      Serial.println("Intentando agregar un nuevo UID...");
+      agregarNuevoUID();  // Llama a la función para agregar un nuevo UID
+    } else if (tecla >= '0' && tecla <= '9') {
       int digito = tecla - '0';  // Convierte el carácter en número entero
       secuenciaIngresada[indiceSecuencia] = digito;  // Guarda el dígito ingresado
       indiceSecuencia++;  // Avanza en la secuencia
@@ -159,12 +175,46 @@ void leerTarjeta() {
 
 // Verifica si el UID leído de la tarjeta es válido
 bool TarjetaValida() {
-  bool tarjetaValida = true;
-  for (byte i = 0; i < 4; i++) {
-    if (rfid.uid.uidByte[i] != uidValida[i]) {
-      tarjetaValida = false;
-      break;
+  for (int j = 0; j < numUIDs; j++) {
+    bool tarjetaValida = true;
+    for (byte i = 0; i < 4; i++) {
+      if (rfid.uid.uidByte[i] != uidsPermitidos[j][i]) {
+        tarjetaValida = false;
+        break;
+      }
     }
+    if (tarjetaValida) return true;
   }
-  return tarjetaValida;
+  return false;
+}
+
+// Función para agregar un nuevo UID a la lista
+void agregarNuevoUID() {
+  if (numUIDs >= MAX_UIDS) {
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Max UIDs alcanzado");
+    delay(2000);
+    return;
+  }
+
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Aproxime tarjeta");
+
+  // Espera hasta que una tarjeta esté presente
+  while (!rfid.PICC_IsNewCardPresent() || !rfid.PICC_ReadCardSerial()) {
+    delay(100);  // Pausa breve para evitar un bucle intenso
+  }
+
+  // Almacena el nuevo UID
+  for (int i = 0; i < 4; i++) {
+    uidsPermitidos[numUIDs][i] = rfid.uid.uidByte[i];
+  }
+  numUIDs++;
+
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Nuevo UID agregado");
+  delay(2000);
 }
