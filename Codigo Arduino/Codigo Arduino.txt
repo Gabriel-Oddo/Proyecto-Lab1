@@ -1,10 +1,13 @@
-#include <LiquidCrystal.h>
-#include <SPI.h>            // Librería para comunicación SPI
-#include <MFRC522.h>        // Librería para el módulo RFID
-#include <Keypad.h>         // Librería para el teclado matricial
+#include <Wire.h>                 // Librería para comunicación I2C  
+#include <LiquidCrystal_I2C.h>     // Librería para controlar la pantalla LCD I2C
+#include <SPI.h>                   // Librería para comunicación SPI
+#include <MFRC522.h>               // Librería para el módulo RFID
+#include <Keypad.h>                // Librería para el teclado matricial
+#include <SoftwareSerial.h>        // Librería para la comunicación Bluetooth
+#include <Servo.h>                 // Librería para controlar el servomotor
 
-// Pines para la pantalla LCD en pines analógicos
-LiquidCrystal lcd(A5, A4, A3, A2, A1, A0);  // RS = A5, E = A4, D4 = A3, D5 = A2, D6 = A1, D7 = A0
+// Dirección I2C de la pantalla LCD (asegúrate de usar la correcta para tu pantalla)
+LiquidCrystal_I2C lcd(0x27, 16, 2);  // Dirección I2C, y tamaño de la pantalla 16x2
 
 // Pines y objeto para el lector RFID
 #define SS_PIN 10           // Pin SDA del RFID
@@ -28,6 +31,9 @@ byte pinColumna[COLUMNAS] = {2, 7, 8, 1};  // Pines de las columnas del teclado 
 
 Keypad teclado = Keypad(makeKeymap(teclas), pinFila, pinColumna, FILAS, COLUMNAS);
 
+// Configuración de Bluetooth
+SoftwareSerial bluetooth(A0, A1);  // RX en A1, TX en A10
+
 // Array para almacenar UIDs permitidos
 #define MAX_UIDS 10
 byte uidsPermitidos[MAX_UIDS][4];
@@ -43,8 +49,13 @@ int indiceSecuencia = 0;    // Para llevar el control de la secuencia de dígito
 unsigned long tiempoCambio;
 const unsigned long intervalo = 3000; // Intervalo de 3 segundos
 
+// Configuración del servomotor
+Servo miServo;  // Objeto Servo
+bool servoGirado = false;  // Variable que indica si el servomotor ya ha girado
+
 void setup() {
   Serial.begin(9600); // Inicializa la comunicación serial para mostrar el UID
+  bluetooth.begin(9600);  // Configura la velocidad de comunicación del Bluetooth
   lcd.begin(16, 2);         // Inicializa la pantalla LCD de 16x2
   lcd.clear();              // Limpia la pantalla
   lcd.setCursor(0, 0);
@@ -58,6 +69,10 @@ void setup() {
   for (int i = 0; i < 4; i++) {
     uidsPermitidos[0][i] = uidValida[i];
   }
+
+  // Configura el servomotor
+  miServo.attach(A3);  // Conecta el servomotor al pin A3
+  miServo.write(0);    // Inicializa el servomotor en 0 grados
 }
 
 void loop() {
@@ -106,6 +121,7 @@ void loop() {
 
       if (esCorrecta) {
         mostrarBienvenido(); // Función para mostrar "Bienvenido"
+        girarServo();        // Función para girar el servomotor
       } else {
         mostrarError(); // Función para mostrar "Error"
       }
@@ -116,6 +132,34 @@ void loop() {
       for (int i = 0; i < 4; i++) {
         secuenciaIngresada[i] = 0;
       }
+    }
+  }
+
+  // Verifica si hay datos recibidos desde el módulo Bluetooth
+  if (bluetooth.available()) {
+    byte valor = bluetooth.read();  // Lee el byte recibido
+    
+    Serial.print("Valor recibido via Bluetooth: ");
+    Serial.println(valor, HEX);  // Muestra el valor recibido en formato hexadecimal
+    
+    // Si el valor recibido es 0x02, permite que el servomotor vuelva a la posición inicial
+    if (valor == 0x02) {
+      servoGirado = false;  // Permite que el servomotor regrese
+      miServo.write(0);     // Vuelve a la posición inicial
+    } 
+    // Si el valor recibido es 0x01, muestra "Clave Correcta" y gira el servomotor
+    else if (valor == 0x01) {
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Clave Correcta");
+      girarServo();  // Gira el servomotor a 60 grados
+    } else {
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Comando invalido");
+      delay(2000);
+      lcd.clear();
+      lcd.print("Ingrese clave");
     }
   }
 }
@@ -168,6 +212,7 @@ void leerTarjeta() {
   // Verifica si el UID leído de la tarjeta es válido
   if (TarjetaValida()) {
     mostrarBienvenido(); // Si es válido, muestra "Bienvenido"
+    girarServo();        // Gira el servomotor
   } else {
     mostrarError(); // Si no es válido, muestra "Error"
   }
@@ -217,4 +262,13 @@ void agregarNuevoUID() {
   lcd.setCursor(0, 0);
   lcd.print("Nuevo UID agregado");
   delay(2000);
+}
+
+// Función para girar el servomotor a 60 grados
+void girarServo() {
+  if (!servoGirado) {
+    miServo.write(120);  // Gira el servomotor a 60 grados
+    delay(1000);        // Espera 1 segundo
+    servoGirado = true;  // Marcar que el servomotor ha girado
+  }
 }
