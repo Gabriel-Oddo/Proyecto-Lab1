@@ -1,165 +1,173 @@
-#include <Wire.h>                 // Librería para comunicación I2C  
-#include <LiquidCrystal_I2C.h>     // Librería para controlar la pantalla LCD I2C
-#include <SPI.h>                   // Librería para comunicación SPI
-#include <MFRC522.h>               // Librería para el módulo RFID
-#include <Keypad.h>                // Librería para el teclado matricial
-#include <SoftwareSerial.h>        // Librería para la comunicación Bluetooth
-#include <Servo.h>                 // Librería para controlar el servomotor
+#include <Wire.h>               // Librería para comunicación I2C 
+#include <LiquidCrystal_I2C.h>  // Librería para el LCD con módulo I2C
+#include <SPI.h>                // Librería para comunicación SPI
+#include <MFRC522.h>            // Librería para el módulo RFID
+#include <Keypad.h>             // Librería para el teclado matricial
+#include <SoftwareSerial.h>     // Librería para comunicación serial en otros pines
+#include <Servo.h>              // Librería para el control del servo
 
-// Dirección I2C de la pantalla LCD (asegúrate de usar la correcta para tu pantalla)
-LiquidCrystal_I2C lcd(0x27, 16, 2);  // Dirección I2C, y tamaño de la pantalla 16x2
+//  Configuraciones
+#define SS_PIN 10               
+#define RST_PIN 9               
+#define SERVO_PIN A1            
 
-// Pines y objeto para el lector RFID
-#define SS_PIN 10           // Pin SDA del RFID
-#define RST_PIN 9           // Pin RST del RFID
-MFRC522 rfid(SS_PIN, RST_PIN);  // Objeto RFID
+const int SECUENCIA_CORRECTA[4] = {8, 8, 2, 8}; 
+byte UID_VALIDO[4] = {0x14, 0x8A, 0x32, 0x2B};  
+const unsigned long DELAY_ENTRE_TARJETAS = 2000;
 
-// Configuración del teclado matricial (4x4)
-const byte FILAS = 4;  // 4 filas
-const byte COLUMNAS = 4;  // 4 columnas
+// Objetos
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+MFRC522 rfid(SS_PIN, RST_PIN);
+SoftwareSerial btSerial(A2, A3);
+Servo servoMotor;
 
-// Configuración del teclado sin las teclas A, B, C, D
+// Configuración del teclado
+const byte FILAS = 4;  
+const byte COLUMNAS = 4;  
+
 char teclas[FILAS][COLUMNAS] = {
-  {'1','2','3','*'},  // Primera fila con números y '*'
-  {'4','5','6','0'},  // Segunda fila con números
-  {'7','8','9','#'},  // Tercera fila con números y '#'
-  {'*','0','#',' '}   // Cuarta fila, ' ' se usa para ignorar la tecla D
+  {'1', '2', '3', '*'},
+  {'4', '5', '6', '0'},
+  {'7', '8', '9', '#'},
+  {'*', '0', '#', ' '}
 };
 
-byte pinFila[FILAS] = {3, 4, 5, 6};  // Pines de las filas del teclado
-byte pinColumna[COLUMNAS] = {2, 7, 8, 1};  // Pines de las columnas del teclado (columna 2 en pin 7, columna 3 en pin 8)
+byte pinFila[FILAS] = {3, 4, 5, 6};      
+byte pinColumna[COLUMNAS] = {2, 7, 8, 1}; 
 
 Keypad teclado = Keypad(makeKeymap(teclas), pinFila, pinColumna, FILAS, COLUMNAS);
 
-// Configuración de Bluetooth
-SoftwareSerial bluetooth(A0, A1);  // RX en A1, TX en A10
-
-// Array para almacenar UIDs permitidos
-#define MAX_UIDS 10
-byte uidsPermitidos[MAX_UIDS][4];
-int numUIDs = 1;  // Número de UIDs permitidos
-
-// UID inicial
-byte uidValida[4] = {0x14, 0x8A, 0x32, 0x2B};  // UID de la tarjeta válida
-int secuenciaCorrecta[] = {8, 8, 2, 8};  // Secuencia correcta de la clave
-
-int secuenciaIngresada[4];  // Para almacenar los 4 dígitos ingresados
-int indiceSecuencia = 0;    // Para llevar el control de la secuencia de dígitos ingresados
-
-unsigned long tiempoCambio;
-const unsigned long intervalo = 3000; // Intervalo de 3 segundos
-
-// Configuración del servomotor
-Servo miServo;  // Objeto Servo
-bool servoGirado = false;  // Variable que indica si el servomotor ya ha girado
+// --- Variables ---
+int secuenciaIngresada[4] = {0, 0, 0, 0};
+int indiceSecuencia = 0;
+bool bienvenidoActivo = false;
+bool servoActivo = false;
+bool tarjetaPreviamenteLeida = false;
+byte ultimoUIDLeido[4] = {0, 0, 0, 0};
+unsigned long tiempoUltimaLectura = 0; 
 
 void setup() {
-  Serial.begin(9600); // Inicializa la comunicación serial para mostrar el UID
-  bluetooth.begin(9600);  // Configura la velocidad de comunicación del Bluetooth
-  lcd.begin(16, 2);         // Inicializa la pantalla LCD de 16x2
-  lcd.clear();              // Limpia la pantalla
+  Serial.begin(9600);        
+  btSerial.begin(9600);      
+  lcd.init();                
+  lcd.backlight();          
+  lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print("Ingrese clave");
 
-  // Inicialización del lector RFID
-  SPI.begin();
-  rfid.PCD_Init();
+  SPI.begin();               
+  rfid.PCD_Init();           
 
-  // Agrega el primer UID permitido
-  for (int i = 0; i < 4; i++) {
-    uidsPermitidos[0][i] = uidValida[i];
-  }
-
-  // Configura el servomotor
-  miServo.attach(A3);  // Conecta el servomotor al pin A3
-  miServo.write(0);    // Inicializa el servomotor en 0 grados
+  servoMotor.attach(SERVO_PIN);  
+  servoMotor.write(120);          
 }
 
 void loop() {
-  leerTarjeta(); // Llama a la función para leer la tarjeta
-  char tecla = teclado.getKey();  // Obtiene la tecla presionada
+  leerTarjetaRFID();
+  verificarTeclado();
+  verificarBluetooth();
+}
 
-  // Verifica si se ha presionado una tecla del teclado
-  if (tecla) {
-    Serial.print("Tecla presionada: ");
-    Serial.println(tecla);  // Muestra la tecla presionada en el monitor serial
+// --- Funciones ---
+void leerTarjetaRFID() {
+  if (!rfid.PICC_IsNewCardPresent() || !rfid.PICC_ReadCardSerial()) return;
 
-    if (tecla == '#') {
-      Serial.println("Intentando agregar un nuevo UID...");
-      agregarNuevoUID();  // Llama a la función para agregar un nuevo UID
-    } else if (tecla >= '0' && tecla <= '9') {
-      int digito = tecla - '0';  // Convierte el carácter en número entero
-      secuenciaIngresada[indiceSecuencia] = digito;  // Guarda el dígito ingresado
-      indiceSecuencia++;  // Avanza en la secuencia
+  unsigned long tiempoActual = millis();
 
-      // Muestra los dígitos ingresados en la pantalla LCD
-      lcd.clear();  // Limpiar la pantalla para actualizarla
-      lcd.setCursor(0, 0);  // Posiciona el cursor en la fila 0, columna 0
-
-      for (int i = 0; i < indiceSecuencia; i++) {
-        lcd.print(secuenciaIngresada[i]);  // Muestra cada dígito en la pantalla
+  if (validarUID(rfid.uid.uidByte)) {
+    if (tarjetaPreviamenteLeida && compararUIDs(ultimoUIDLeido, rfid.uid.uidByte)) {
+      if (tiempoActual - tiempoUltimaLectura >= DELAY_ENTRE_TARJETAS) {
+        reiniciarSistema();  // Resetea el sistema
+        delay(DELAY_ENTRE_TARJETAS); 
       }
-
-      // Si se ingresaron 4 dígitos y se presiona la tecla '*'
-      if (indiceSecuencia == 4) {
-        lcd.clear();
-        lcd.setCursor(0, 0);
-        lcd.print("Presione *");
-      }
+    } else {
+      mostrarBienvenido();
+      activarServo();
+      guardarUltimoUID(rfid.uid.uidByte);
+      tarjetaPreviamenteLeida = true;
+      tiempoUltimaLectura = tiempoActual;
+      delay(DELAY_ENTRE_TARJETAS);
     }
+  } else {
+    mostrarError();
+  }
+}
 
-    // Si se presiona la tecla '*' después de ingresar los 4 dígitos
-    if (tecla == '*') {
-      // Verifica si la secuencia ingresada es correcta
-      bool esCorrecta = true;
-      for (int i = 0; i < 4; i++) {
-        if (secuenciaIngresada[i] != secuenciaCorrecta[i]) {
-          esCorrecta = false;
-          break;
-        }
-      }
+bool validarUID(byte *uid) {
+  for (int i = 0; i < 4; i++) {
+    if (uid[i] != UID_VALIDO[i]) return false;
+  }
+  return true;
+}
 
-      if (esCorrecta) {
-        mostrarBienvenido(); // Función para mostrar "Bienvenido"
-        girarServo();        // Función para girar el servomotor
-      } else {
-        mostrarError(); // Función para mostrar "Error"
-      }
+bool compararUIDs(byte *uid1, byte *uid2) {
+  for (int i = 0; i < 4; i++) {
+    if (uid1[i] != uid2[i]) return false;
+  }
+  return true;
+}
 
-      // Resetea la secuencia ingresada para que empiece de nuevo
-      indiceSecuencia = 0;
-      // Limpiar la secuencia de dígitos para el próximo intento
-      for (int i = 0; i < 4; i++) {
-        secuenciaIngresada[i] = 0;
-      }
-    }
+void guardarUltimoUID(byte *uid) {
+  for (int i = 0; i < 4; i++) {
+    ultimoUIDLeido[i] = uid[i];
+  }
+}
+
+void verificarTeclado() {
+  char tecla = teclado.getKey();
+  if (!tecla) return;
+
+  if (tecla == '0' && bienvenidoActivo) {
+    reiniciarSistema();
+    return;
   }
 
-  // Verifica si hay datos recibidos desde el módulo Bluetooth
-  if (bluetooth.available()) {
-    byte valor = bluetooth.read();  // Lee el byte recibido
-    
-    Serial.print("Valor recibido via Bluetooth: ");
-    Serial.println(valor, HEX);  // Muestra el valor recibido en formato hexadecimal
-    
-    // Si el valor recibido es 0x02, permite que el servomotor vuelva a la posición inicial
-    if (valor == 0x02) {
-      servoGirado = false;  // Permite que el servomotor regrese
-      miServo.write(0);     // Vuelve a la posición inicial
-    } 
-    // Si el valor recibido es 0x01, muestra "Clave Correcta" y gira el servomotor
-    else if (valor == 0x01) {
-      lcd.clear();
-      lcd.setCursor(0, 0);
-      lcd.print("Clave Correcta");
-      girarServo();  // Gira el servomotor a 60 grados
+  if (tecla == '*' && indiceSecuencia == 4) {
+    if (validarSecuencia()) {
+      mostrarBienvenido();
+      activarServo();
     } else {
-      lcd.clear();
-      lcd.setCursor(0, 0);
-      lcd.print("Comando invalido");
-      delay(2000);
-      lcd.clear();
-      lcd.print("Ingrese clave");
+      mostrarError();
+    }
+    reiniciarSecuencia();
+  } else if (tecla >= '0' && tecla <= '9') {
+    if (indiceSecuencia < 4) {
+      secuenciaIngresada[indiceSecuencia++] = tecla - '0';
+      mostrarClaveIngresada();
+    }
+  }
+}
+
+bool validarSecuencia() {
+  for (int i = 0; i < 4; i++) {
+    if (secuenciaIngresada[i] != SECUENCIA_CORRECTA[i]) return false;
+  }
+  return true;
+}
+
+void mostrarClaveIngresada() {
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  for (int i = 0; i < indiceSecuencia; i++) {
+    lcd.print(secuenciaIngresada[i]);
+  }
+  if (indiceSecuencia == 4) {
+    lcd.setCursor(0, 1);
+    lcd.print("Presione *");
+  }
+}
+
+void verificarBluetooth() {
+  if (btSerial.available() >= 2) {
+    byte byte1 = btSerial.read();
+    byte byte2 = btSerial.read();
+
+    if (byte1 == 0x33 && byte2 == 0x99) {
+      reiniciarSistema();  
+      return;  
+    } else if (byte1 == 0x88 && byte2 == 0x28) {
+      mostrarBienvenido();
+      activarServo();
     }
   }
 }
@@ -168,107 +176,37 @@ void mostrarBienvenido() {
   lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print("Bienvenido");
-
-  // Espera 3 segundos para volver a la pantalla de inicio
-  delay(3000);
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("Ingrese clave");
-
-  // Resetea la secuencia de la clave
-  secuenciaIngresada[0] = secuenciaIngresada[1] = secuenciaIngresada[2] = secuenciaIngresada[3] = 0;
-  indiceSecuencia = 0;
+  bienvenidoActivo = true;
 }
 
 void mostrarError() {
   lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print("Clave incorrecta");
+  delay(2000);
+  lcd.clear();
+  lcd.print("Ingrese clave");
+}
 
-  // Espera 3 segundos para volver a la pantalla de inicio
-  delay(3000);
+void activarServo() {
+  servoMotor.write(60);  
+  servoActivo = true;
+}
+
+void reiniciarSecuencia() {
+  indiceSecuencia = 0;
+  for (int i = 0; i < 4; i++) secuenciaIngresada[i] = 0;
+}
+
+void reiniciarSistema() {
   lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print("Ingrese clave");
-
-  // Resetea la secuencia de la clave
-  secuenciaIngresada[0] = secuenciaIngresada[1] = secuenciaIngresada[2] = secuenciaIngresada[3] = 0;
-  indiceSecuencia = 0;
-}
-
-// Función para leer la tarjeta RFID
-void leerTarjeta() {
-  if (!rfid.PICC_IsNewCardPresent()) return; // Verifica si hay una nueva tarjeta
-  if (!rfid.PICC_ReadCardSerial()) return;   // Lee el UID de la tarjeta
-  
-  // Muestra el UID de la tarjeta en la terminal serial
-  Serial.print("UID de la tarjeta: ");
-  for (byte i = 0; i < rfid.uid.size; i++) {
-    Serial.print(rfid.uid.uidByte[i], HEX);  // Imprime el UID en formato hexadecimal
-    Serial.print(" ");
+  bienvenidoActivo = false;
+  if (servoActivo) {
+    servoMotor.write(120);  
+    servoActivo = false;
   }
-  Serial.println(); // Salto de línea después del UID
-
-  // Verifica si el UID leído de la tarjeta es válido
-  if (TarjetaValida()) {
-    mostrarBienvenido(); // Si es válido, muestra "Bienvenido"
-    girarServo();        // Gira el servomotor
-  } else {
-    mostrarError(); // Si no es válido, muestra "Error"
-  }
-}
-
-// Verifica si el UID leído de la tarjeta es válido
-bool TarjetaValida() {
-  for (int j = 0; j < numUIDs; j++) {
-    bool tarjetaValida = true;
-    for (byte i = 0; i < 4; i++) {
-      if (rfid.uid.uidByte[i] != uidsPermitidos[j][i]) {
-        tarjetaValida = false;
-        break;
-      }
-    }
-    if (tarjetaValida) return true;
-  }
-  return false;
-}
-
-// Función para agregar un nuevo UID a la lista
-void agregarNuevoUID() {
-  if (numUIDs >= MAX_UIDS) {
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("Max UIDs alcanzado");
-    delay(2000);
-    return;
-  }
-
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("Aproxime tarjeta");
-
-  // Espera hasta que una tarjeta esté presente
-  while (!rfid.PICC_IsNewCardPresent() || !rfid.PICC_ReadCardSerial()) {
-    delay(100);  // Pausa breve para evitar un bucle intenso
-  }
-
-  // Almacena el nuevo UID
-  for (int i = 0; i < 4; i++) {
-    uidsPermitidos[numUIDs][i] = rfid.uid.uidByte[i];
-  }
-  numUIDs++;
-
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("Nuevo UID agregado");
-  delay(2000);
-}
-
-// Función para girar el servomotor a 60 grados
-void girarServo() {
-  if (!servoGirado) {
-    miServo.write(120);  // Gira el servomotor a 60 grados
-    delay(1000);        // Espera 1 segundo
-    servoGirado = true;  // Marcar que el servomotor ha girado
-  }
+  tarjetaPreviamenteLeida = false;
+  reiniciarSecuencia();
 }
